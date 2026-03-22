@@ -20,7 +20,7 @@ class AppleVisionAdapter:
         if not self.is_available():
             raise RuntimeError(f"Apple Vision binary not found at {self.apple_bin}")
 
-        command = [str(self.apple_bin), "--input", str(image_path)]
+        command = [str(self.apple_bin), "ocr", str(image_path)]
         completed = subprocess.run(command, check=True, capture_output=True, text=True)
         payload = json.loads(completed.stdout)
         return _page_from_payload(payload, source=image_path, page_number=page_number, engine="apple")
