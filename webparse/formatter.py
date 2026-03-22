@@ -7,6 +7,9 @@
 
 from __future__ import annotations
 
+import html
+import json
+
 from .models import (
     Blockquote,
     CodeBlock,
@@ -49,30 +52,78 @@ def format_document(doc: ParsedDocument) -> str:
     return "\n\n".join(parts) + "\n" if parts else ""
 
 
+def format_document_json(doc: ParsedDocument) -> str:
+    return json.dumps(doc.to_dict(), ensure_ascii=False, indent=2) + "\n"
+
+
+def format_document_html(doc: ParsedDocument) -> str:
+    parts: list[str] = ["<article>"]
+
+    if doc.title:
+        has_h1 = any(
+            e.element_type == ElementType.HEADING
+            and isinstance(e.content, Heading)
+            and e.content.level == 1
+            for e in doc.elements
+        )
+        if not has_h1:
+            parts.append(f"<h1>{html.escape(doc.title)}</h1>")
+
+    for elem in doc.elements:
+        block = _format_element_html(elem)
+        if block:
+            parts.append(block)
+
+    parts.append("</article>")
+    return "\n".join(parts) + "\n"
+
+
 def _format_element(elem: ContentElement) -> str:
     """Dispatch to the appropriate formatter based on element type."""
-    match elem.element_type:
-        case ElementType.HEADING:
-            return _format_heading(elem.content)  # type: ignore[arg-type]
-        case ElementType.PARAGRAPH:
-            return _format_paragraph(elem.content)  # type: ignore[arg-type]
-        case ElementType.TABLE:
-            return _format_table(elem.content)  # type: ignore[arg-type]
-        case ElementType.LIST:
-            return _format_list(elem.content)  # type: ignore[arg-type]
-        case ElementType.BLOCKQUOTE:
-            return _format_blockquote(elem.content)  # type: ignore[arg-type]
-        case ElementType.CODE_BLOCK:
-            return _format_code_block(elem.content)  # type: ignore[arg-type]
-        case ElementType.IMAGE:
-            return _format_image(elem.content)  # type: ignore[arg-type]
-        case ElementType.HORIZONTAL_RULE:
-            return "---"
-        case _:
-            return ""
+    content = elem.content
+    if elem.element_type == ElementType.HEADING and isinstance(content, Heading):
+        return _format_heading(content)
+    if elem.element_type == ElementType.PARAGRAPH and isinstance(content, Paragraph):
+        return _format_paragraph(content)
+    if elem.element_type == ElementType.TABLE and isinstance(content, Table):
+        return _format_table(content)
+    if elem.element_type == ElementType.LIST and isinstance(content, ContentList):
+        return _format_list(content)
+    if elem.element_type == ElementType.BLOCKQUOTE and isinstance(content, Blockquote):
+        return _format_blockquote(content)
+    if elem.element_type == ElementType.CODE_BLOCK and isinstance(content, CodeBlock):
+        return _format_code_block(content)
+    if elem.element_type == ElementType.IMAGE and isinstance(content, Image):
+        return _format_image(content)
+    if elem.element_type == ElementType.HORIZONTAL_RULE:
+        return "---"
+    return ""
+
+
+def _format_element_html(elem: ContentElement) -> str:
+    attrs = _html_attrs(elem)
+    content = elem.content
+    if elem.element_type == ElementType.HEADING and isinstance(content, Heading):
+        return _format_heading_html(content, attrs)
+    if elem.element_type == ElementType.PARAGRAPH and isinstance(content, Paragraph):
+        return _format_paragraph_html(content, attrs)
+    if elem.element_type == ElementType.TABLE and isinstance(content, Table):
+        return _format_table_html(content, attrs)
+    if elem.element_type == ElementType.LIST and isinstance(content, ContentList):
+        return _format_list_html(content, attrs)
+    if elem.element_type == ElementType.BLOCKQUOTE and isinstance(content, Blockquote):
+        return _format_blockquote_html(content, attrs)
+    if elem.element_type == ElementType.CODE_BLOCK and isinstance(content, CodeBlock):
+        return _format_code_block_html(content, attrs)
+    if elem.element_type == ElementType.IMAGE and isinstance(content, Image):
+        return _format_image_html(content, attrs)
+    if elem.element_type == ElementType.HORIZONTAL_RULE:
+        return f"<hr{attrs}>"
+    return ""
 
 
 # ── individual formatters ─────────────────────────────────────────
+
 
 def _format_heading(h: Heading) -> str:
     prefix = "#" * h.level
@@ -177,7 +228,9 @@ def _render_list_items(
         marker = f"{i}." if ordered else "-"
         lines.append(f"{prefix_space}{marker} {item.text}")
         if item.children:
-            _render_list_items(item.children, ordered=False, indent=indent + 1, lines=lines)
+            _render_list_items(
+                item.children, ordered=False, indent=indent + 1, lines=lines
+            )
 
 
 def _format_blockquote(bq: Blockquote) -> str:
@@ -192,3 +245,118 @@ def _format_code_block(cb: CodeBlock) -> str:
 
 def _format_image(img: Image) -> str:
     return f"![{img.alt}]({img.src})"
+
+
+def _html_attrs(elem: ContentElement) -> str:
+    attrs = {
+        "data-type": elem.element_type.name.lower(),
+        "data-confidence": f"{elem.confidence:.2f}",
+    }
+    if elem.source_path:
+        attrs["data-source-path"] = elem.source_path
+    rendered = " ".join(
+        f'{key}="{html.escape(value, quote=True)}"' for key, value in attrs.items()
+    )
+    return f" {rendered}" if rendered else ""
+
+
+def _format_heading_html(h: Heading, attrs: str) -> str:
+    level = min(max(h.level, 1), 6)
+    return f"<h{level}{attrs}>{html.escape(h.text)}</h{level}>"
+
+
+def _format_paragraph_html(p: Paragraph, attrs: str) -> str:
+    return f"<p{attrs}>{html.escape(p.text)}</p>"
+
+
+def _format_table_html(table: Table, attrs: str) -> str:
+    if not table.rows:
+        return ""
+
+    lines: list[str] = [f"<table{attrs}>"]
+    if table.caption:
+        lines.append(f"  <caption>{html.escape(table.caption)}</caption>")
+
+    header_rows: list[list] = []
+    body_rows: list[list] = []
+    for row in table.rows:
+        if row.cells and row.cells[0].is_header:
+            header_rows.append(row.cells)
+        else:
+            body_rows.append(row.cells)
+
+    if not header_rows and body_rows:
+        header_rows.append(body_rows.pop(0))
+
+    if header_rows:
+        lines.append("  <thead>")
+        for row in header_rows:
+            lines.append("    <tr>")
+            for cell in row:
+                lines.append(
+                    _format_table_cell_html(cell, header=True, indent="      ")
+                )
+            lines.append("    </tr>")
+        lines.append("  </thead>")
+
+    lines.append("  <tbody>")
+    for row in body_rows:
+        lines.append("    <tr>")
+        for cell in row:
+            lines.append(_format_table_cell_html(cell, header=False, indent="      "))
+        lines.append("    </tr>")
+    lines.append("  </tbody>")
+    lines.append("</table>")
+    return "\n".join(lines)
+
+
+def _format_table_cell_html(cell, *, header: bool, indent: str) -> str:
+    tag = "th" if header or cell.is_header else "td"
+    attrs: list[str] = []
+    if cell.colspan > 1:
+        attrs.append(f'colspan="{cell.colspan}"')
+    if cell.rowspan > 1:
+        attrs.append(f'rowspan="{cell.rowspan}"')
+    attr_text = f" {' '.join(attrs)}" if attrs else ""
+    return f"{indent}<{tag}{attr_text}>{html.escape(cell.text)}</{tag}>"
+
+
+def _format_list_html(cl: ContentList, attrs: str) -> str:
+    tag = "ol" if cl.ordered else "ul"
+    lines = [f"<{tag}{attrs}>"]
+    _render_list_items_html(cl.items, indent=1, lines=lines)
+    lines.append(f"</{tag}>")
+    return "\n".join(lines)
+
+
+def _render_list_items_html(
+    items: list[ListItem], *, indent: int, lines: list[str]
+) -> None:
+    prefix = "  " * indent
+    for item in items:
+        lines.append(f"{prefix}<li>{html.escape(item.text)}")
+        if item.children:
+            lines.append(f"{prefix}  <ul>")
+            _render_list_items_html(item.children, indent=indent + 2, lines=lines)
+            lines.append(f"{prefix}  </ul>")
+        lines.append(f"{prefix}</li>")
+
+
+def _format_blockquote_html(bq: Blockquote, attrs: str) -> str:
+    return f"<blockquote{attrs}>{html.escape(bq.text)}</blockquote>"
+
+
+def _format_code_block_html(cb: CodeBlock, attrs: str) -> str:
+    class_attr = (
+        f' class="language-{html.escape(cb.language, quote=True)}"'
+        if cb.language
+        else ""
+    )
+    return f"<pre{attrs}><code{class_attr}>{html.escape(cb.code)}</code></pre>"
+
+
+def _format_image_html(img: Image, attrs: str) -> str:
+    return (
+        f'<img{attrs} src="{html.escape(img.src, quote=True)}" '
+        f'alt="{html.escape(img.alt, quote=True)}">'
+    )

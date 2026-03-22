@@ -7,6 +7,7 @@ parse image.png              → OCR (Apple Vision)
 parse document.pdf           → OCR (GLM-OCR)
 parse page.html              → HTML→마크다운
 parse --url https://...      → fetch + 마크다운
+parse --url https://... --render  → Playwright 렌더링 + 마크다운
 echo "<html>..." | parse     → stdin HTML 감지
 ```
 
@@ -24,7 +25,7 @@ echo "<html>..." | parse     → stdin HTML 감지
 pip install -e .
 ```
 
-**의존성:** Python 3.10+, beautifulsoup4, lxml, requests
+**의존성:** Python 3.10+, beautifulsoup4, lxml, requests, playwright
 
 **OCR 추가 요구사항 (hyocr):**
 - macOS (Apple Vision Framework)
@@ -46,8 +47,12 @@ parse report.pdf
 # HTML → 마크다운
 parse page.html
 
-# URL 직접 (JS 렌더링 안됨)
+# URL 직접 (기본: 요청 기반 fetch)
 parse --url https://example.com
+
+# JS 동적 페이지 렌더링
+parse --url https://www.notion.so/... --render
+parse --url https://example.com/app --render --timeout 20
 
 # stdin 파이프
 echo "<html>..." | parse
@@ -65,6 +70,10 @@ webparse --file saved_page.html
 
 # URL
 webparse --url https://example.com
+
+# URL + JS 렌더링
+webparse --url https://example.com/app --render
+webparse --url https://example.com/app --render --timeout 20
 ```
 
 ### hyocr 단독
@@ -165,7 +174,8 @@ pytest tests/ocr/ -v
 
 ## 제약사항
 
-- **webparse는 JS 렌더링 안 함.** 동적 페이지는 브라우저 도구로 먼저 렌더링 후 HTML을 전달.
+- **`--render` 사용 시 Playwright 브라우저 바이너리 필요.**
+  `playwright install chromium`으로 설치.
 - **hyocr는 macOS 전용.** Apple Vision Framework 의존.
 - **외부 API 없음.** 모든 처리는 로컬. 입력 데이터를 외부로 전송하지 않음.
 

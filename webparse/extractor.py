@@ -12,7 +12,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, Tag
+from bs4.element import NavigableString
 
 from .models import (
     Blockquote,
@@ -32,6 +33,61 @@ from .models import (
 
 
 # ── helpers ───────────────────────────────────────────────────────
+
+
+def _attr_text(tag: Tag, key: str) -> Optional[str]:
+    value = tag.get(key)
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return " ".join(str(item) for item in value)
+    return str(value)
+
+
+def _attr_int(tag: Tag, key: str, default: int = 1) -> int:
+    value = _attr_text(tag, key)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _child_index(tag: Tag) -> int:
+    index = 1
+    for sibling in tag.previous_siblings:
+        if isinstance(sibling, Tag) and sibling.name == tag.name:
+            index += 1
+    return index
+
+
+def _tag_path(tag: Tag) -> str:
+    parts: list[str] = []
+    current: Optional[Tag] = tag
+    while current is not None and isinstance(current, Tag):
+        if current.name == "[document]":
+            break
+        parts.append(f"{current.name}:nth-of-type({_child_index(current)})")
+        parent = current.parent
+        current = parent if isinstance(parent, Tag) else None
+    return " > ".join(reversed(parts))
+
+
+def _text_node_path(node: NavigableString) -> Optional[str]:
+    parent = node.parent
+    if isinstance(parent, Tag):
+        return f"{_tag_path(parent)} > #text"
+    return None
+
+
+def _confidence_for_tag(tag_name: str, *, is_block: bool = True) -> float:
+    if tag_name in HEADING_TAGS or tag_name in {"table", "blockquote", "pre", "hr"}:
+        return 0.99
+    if tag_name in {"ul", "ol", "img", "p"}:
+        return 0.97 if is_block else 0.68
+    return 0.85 if is_block else 0.68
+
 
 def _get_text(tag: Tag, separator: str = " ") -> str:
     """Extract text from a tag, collapsing whitespace."""
@@ -90,6 +146,7 @@ def _find_main_content(soup: BeautifulSoup) -> Tag:
 
 # ── layout table detection ────────────────────────────────────────
 
+
 def _is_layout_table(tag: Tag) -> bool:
     """
     [Purpose] Detect layout tables (used for page structure, not data).
@@ -113,20 +170,37 @@ def _is_layout_table(tag: Tag) -> bool:
 
     # Single-column tables are usually layout wrappers
     all_single_col = all(
-        len(tr.find_all(["td", "th"], recursive=False)) <= 1
-        for tr in rows
+        len(tr.find_all(["td", "th"], recursive=False)) <= 1 for tr in rows
     )
     if all_single_col and len(rows) > 2:
         return True
 
     # Cells containing block elements -> layout
-    block_tags = {"div", "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "table", "article", "section", "p"}
+    block_tags = {
+        "div",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "ul",
+        "ol",
+        "table",
+        "article",
+        "section",
+        "p",
+    }
     for tr in rows:
         for cell in tr.find_all(["td", "th"], recursive=False):
             for child in cell.children:
                 if isinstance(child, Tag) and child.name in block_tags:
                     # p tags inside td are OK for data tables, but multiple block elements is layout
-                    block_children = [c for c in cell.children if isinstance(c, Tag) and c.name in block_tags]
+                    block_children = [
+                        c
+                        for c in cell.children
+                        if isinstance(c, Tag) and c.name in block_tags
+                    ]
                     if len(block_children) > 1:
                         return True
 
@@ -145,6 +219,7 @@ def _is_layout_table(tag: Tag) -> bool:
 
 # ── element extractors ────────────────────────────────────────────
 
+
 def _extract_heading(tag: Tag) -> Heading:
     level = int(tag.name[1])  # h1-h6
     return Heading(level=level, text=_get_text(tag))
@@ -162,14 +237,16 @@ def _extract_table(tag: Tag) -> Table:
     for tr in tag.find_all("tr"):
         cells: list[TableCell] = []
         for cell in tr.find_all(["td", "th"]):
-            colspan = int(cell.get("colspan", 1) or 1)
-            rowspan = int(cell.get("rowspan", 1) or 1)
-            cells.append(TableCell(
-                text=_get_text(cell),
-                is_header=(cell.name == "th"),
-                colspan=colspan,
-                rowspan=rowspan,
-            ))
+            colspan = _attr_int(cell, "colspan", 1)
+            rowspan = _attr_int(cell, "rowspan", 1)
+            cells.append(
+                TableCell(
+                    text=_get_text(cell),
+                    is_header=(cell.name == "th"),
+                    colspan=colspan,
+                    rowspan=rowspan,
+                )
+            )
         if cells:
             rows.append(TableRow(cells=cells))
 
@@ -221,19 +298,22 @@ def _extract_code_block(tag: Tag) -> CodeBlock:
     if code_tag and isinstance(code_tag, Tag):
         code_text = code_tag.get_text()
         # Try to detect language from class like "language-python"
-        classes = code_tag.get("class", [])
+        classes = code_tag.get("class")
         lang = None
-        for cls in (classes if isinstance(classes, list) else [classes]):
+        class_values = (
+            classes if isinstance(classes, list) else ([classes] if classes else [])
+        )
+        for cls in class_values:
             if cls and cls.startswith("language-"):
-                lang = cls[len("language-"):]
+                lang = cls[len("language-") :]
                 break
         return CodeBlock(code=code_text, language=lang)
     return CodeBlock(code=tag.get_text())
 
 
 def _extract_image(tag: Tag) -> Image:
-    src = tag.get("src", "") or ""
-    alt = tag.get("alt", "") or ""
+    src = _attr_text(tag, "src") or ""
+    alt = _attr_text(tag, "alt") or ""
     return Image(src=src, alt=alt)
 
 
@@ -265,11 +345,15 @@ def _walk_and_extract(root: Tag) -> list[ContentElement]:
             if isinstance(child, NavigableString):
                 text = child.strip()
                 if text:
-                    elements.append(ContentElement(
-                        element_type=ElementType.PARAGRAPH,
-                        content=Paragraph(text=text),
-                        source_order=order,
-                    ))
+                    elements.append(
+                        ContentElement(
+                            element_type=ElementType.PARAGRAPH,
+                            content=Paragraph(text=text),
+                            source_order=order,
+                            confidence=_confidence_for_tag("#text", is_block=False),
+                            source_path=_text_node_path(child),
+                        )
+                    )
                     order += 1
                 continue
 
@@ -282,11 +366,15 @@ def _walk_and_extract(root: Tag) -> list[ContentElement]:
             if tag_name in HEADING_TAGS:
                 h = _extract_heading(child)
                 if h.text:
-                    elements.append(ContentElement(
-                        element_type=ElementType.HEADING,
-                        content=h,
-                        source_order=order,
-                    ))
+                    elements.append(
+                        ContentElement(
+                            element_type=ElementType.HEADING,
+                            content=h,
+                            source_order=order,
+                            confidence=_confidence_for_tag(tag_name),
+                            source_path=_tag_path(child),
+                        )
+                    )
                     order += 1
                 continue
 
@@ -298,11 +386,15 @@ def _walk_and_extract(root: Tag) -> list[ContentElement]:
                 else:
                     t = _extract_table(child)
                     if t.rows:
-                        elements.append(ContentElement(
-                            element_type=ElementType.TABLE,
-                            content=t,
-                            source_order=order,
-                        ))
+                        elements.append(
+                            ContentElement(
+                                element_type=ElementType.TABLE,
+                                content=t,
+                                source_order=order,
+                                confidence=_confidence_for_tag(tag_name),
+                                source_path=_tag_path(child),
+                            )
+                        )
                         order += 1
                 continue
 
@@ -310,11 +402,15 @@ def _walk_and_extract(root: Tag) -> list[ContentElement]:
             if tag_name in ("ul", "ol"):
                 lst = _extract_list(child)
                 if lst.items:
-                    elements.append(ContentElement(
-                        element_type=ElementType.LIST,
-                        content=lst,
-                        source_order=order,
-                    ))
+                    elements.append(
+                        ContentElement(
+                            element_type=ElementType.LIST,
+                            content=lst,
+                            source_order=order,
+                            confidence=_confidence_for_tag(tag_name),
+                            source_path=_tag_path(child),
+                        )
+                    )
                     order += 1
                 continue
 
@@ -322,11 +418,15 @@ def _walk_and_extract(root: Tag) -> list[ContentElement]:
             if tag_name == "blockquote":
                 bq = _extract_blockquote(child)
                 if bq.text:
-                    elements.append(ContentElement(
-                        element_type=ElementType.BLOCKQUOTE,
-                        content=bq,
-                        source_order=order,
-                    ))
+                    elements.append(
+                        ContentElement(
+                            element_type=ElementType.BLOCKQUOTE,
+                            content=bq,
+                            source_order=order,
+                            confidence=_confidence_for_tag(tag_name),
+                            source_path=_tag_path(child),
+                        )
+                    )
                     order += 1
                 continue
 
@@ -334,11 +434,15 @@ def _walk_and_extract(root: Tag) -> list[ContentElement]:
             if tag_name == "pre":
                 cb = _extract_code_block(child)
                 if cb.code.strip():
-                    elements.append(ContentElement(
-                        element_type=ElementType.CODE_BLOCK,
-                        content=cb,
-                        source_order=order,
-                    ))
+                    elements.append(
+                        ContentElement(
+                            element_type=ElementType.CODE_BLOCK,
+                            content=cb,
+                            source_order=order,
+                            confidence=_confidence_for_tag(tag_name),
+                            source_path=_tag_path(child),
+                        )
+                    )
                     order += 1
                 continue
 
@@ -346,21 +450,29 @@ def _walk_and_extract(root: Tag) -> list[ContentElement]:
             if tag_name == "img":
                 img = _extract_image(child)
                 if img.src:
-                    elements.append(ContentElement(
-                        element_type=ElementType.IMAGE,
-                        content=img,
-                        source_order=order,
-                    ))
+                    elements.append(
+                        ContentElement(
+                            element_type=ElementType.IMAGE,
+                            content=img,
+                            source_order=order,
+                            confidence=_confidence_for_tag(tag_name),
+                            source_path=_tag_path(child),
+                        )
+                    )
                     order += 1
                 continue
 
             # Horizontal rules
             if tag_name == "hr":
-                elements.append(ContentElement(
-                    element_type=ElementType.HORIZONTAL_RULE,
-                    content=None,
-                    source_order=order,
-                ))
+                elements.append(
+                    ContentElement(
+                        element_type=ElementType.HORIZONTAL_RULE,
+                        content=None,
+                        source_order=order,
+                        confidence=_confidence_for_tag(tag_name),
+                        source_path=_tag_path(child),
+                    )
+                )
                 order += 1
                 continue
 
@@ -368,11 +480,15 @@ def _walk_and_extract(root: Tag) -> list[ContentElement]:
             if tag_name == "p":
                 text = _get_text(child)
                 if text:
-                    elements.append(ContentElement(
-                        element_type=ElementType.PARAGRAPH,
-                        content=Paragraph(text=text, is_block=True),
-                        source_order=order,
-                    ))
+                    elements.append(
+                        ContentElement(
+                            element_type=ElementType.PARAGRAPH,
+                            content=Paragraph(text=text, is_block=True),
+                            source_order=order,
+                            confidence=_confidence_for_tag(tag_name),
+                            source_path=_tag_path(child),
+                        )
+                    )
                     order += 1
                 continue
 
@@ -385,6 +501,7 @@ def _walk_and_extract(root: Tag) -> list[ContentElement]:
 
 
 # ── public API ────────────────────────────────────────────────────
+
 
 def extract(soup: BeautifulSoup) -> ParsedDocument:
     """
@@ -400,13 +517,13 @@ def extract(soup: BeautifulSoup) -> ParsedDocument:
     meta_desc = None
     meta_tag = soup.find("meta", attrs={"name": "description"})
     if meta_tag and isinstance(meta_tag, Tag):
-        meta_desc = meta_tag.get("content", "")
+        meta_desc = _attr_text(meta_tag, "content") or ""
 
     # Language
     html_tag = soup.find("html")
     lang = None
     if html_tag and isinstance(html_tag, Tag):
-        lang = html_tag.get("lang")
+        lang = _attr_text(html_tag, "lang")
 
     # Find main content area
     main_content = _find_main_content(soup)

@@ -7,8 +7,9 @@
   parse document.pdf           → hyocr (GLM-OCR)
   parse page.html              → webparse (HTML→마크다운)
   parse --url https://...      → webparse (fetch + 파싱)
+  parse --url https://... --render           → 브라우저 렌더링 후 파싱
+  parse --url https://... --render --timeout 20  → 렌더링 타임아웃 20초
   echo "<html>" | parse        → webparse (stdin HTML 감지)
-  parse --url https://... --render  → 브라우저 렌더링 후 webparse (향후)
 """
 import sys
 import subprocess
