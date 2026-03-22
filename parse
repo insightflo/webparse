@@ -1,0 +1,97 @@
+#!/usr/bin/env python3
+"""
+통합 파서 CLI — 입력 타입을 자동 감지하여 적절한 도구로 라우팅.
+
+사용법:
+  parse image.png              → hyocr (Apple Vision OCR)
+  parse document.pdf           → hyocr (GLM-OCR)
+  parse page.html              → webparse (HTML→마크다운)
+  parse --url https://...      → webparse (fetch + 파싱)
+  echo "<html>" | parse        → webparse (stdin HTML 감지)
+  parse --url https://... --render  → 브라우저 렌더링 후 webparse (향후)
+"""
+import sys
+import subprocess
+from pathlib import Path
+
+MONO_ROOT = Path(__file__).resolve().parent
+
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".heic", ".webp"}
+PDF_EXTS = {".pdf"}
+HTML_EXTS = {".html", ".htm", ".xhtml", ".mhtml"}
+
+
+def detect_stdin_type(content: str) -> str:
+    stripped = content.strip()
+    if stripped.startswith(("<!DOCTYPE", "<!doctype", "<html", "<HTML", "<head", "<body", "<div")):
+        return "html"
+    return "text"
+
+
+def run_hyocr(args: list[str]) -> int:
+    cmd = [sys.executable, "-m", "hyocr.cli", "run"] + args
+    return subprocess.run(cmd, cwd=str(MONO_ROOT)).returncode
+
+
+def run_webparse(args: list[str], stdin_data: str = None) -> int:
+    cmd = [sys.executable, "-m", "webparse"] + args
+    if stdin_data:
+        return subprocess.run(cmd, cwd=str(MONO_ROOT), input=stdin_data, text=True).returncode
+    return subprocess.run(cmd, cwd=str(MONO_ROOT)).returncode
+
+
+def main() -> int:
+    args = sys.argv[1:]
+
+    # --url 모드 → webparse
+    if "--url" in args or "-u" in args:
+        return run_webparse(args)
+
+    # stdin 모드
+    if not sys.stdin.isatty() and not args:
+        content = sys.stdin.read()
+        if detect_stdin_type(content) == "html":
+            return run_webparse([], stdin_data=content)
+        # 텍스트면 그냥 출력 (passthrough)
+        sys.stdout.write(content)
+        return 0
+
+    # 파일 모드
+    if args:
+        file_arg = args[0]
+        if file_arg.startswith("-"):
+            # 플래그로 시작하면 나머지 args와 함께 판단
+            if "--file" in args or "-f" in args:
+                idx = args.index("--file") if "--file" in args else args.index("-f")
+                if idx + 1 < len(args):
+                    file_arg = args[idx + 1]
+                else:
+                    print("에러: --file 뒤에 경로가 필요합니다.", file=sys.stderr)
+                    return 1
+
+        path = Path(file_arg)
+        ext = path.suffix.lower()
+
+        if ext in IMAGE_EXTS or ext in PDF_EXTS:
+            return run_hyocr([str(path)] + args[1:])
+        elif ext in HTML_EXTS:
+            return run_webparse(["--file", str(path)] + args[1:])
+        else:
+            # 확장자 모르면 내용 감지
+            if path.exists():
+                head = path.read_text(encoding="utf-8", errors="ignore")[:200]
+                if detect_stdin_type(head) == "html":
+                    return run_webparse(["--file", str(path)])
+                else:
+                    return run_hyocr([str(path)] + args[1:])
+            else:
+                print(f"에러: 파일을 찾을 수 없습니다: {file_arg}", file=sys.stderr)
+                return 1
+
+    # 인자 없음
+    print(__doc__.strip())
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

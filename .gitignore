@@ -10,3 +10,8 @@ build/
 *.swp
 *.swo
 .DS_Store
+.build/
+.venv*/
+*.pyc
+tmp/
+output/
